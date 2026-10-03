@@ -1,0 +1,36 @@
+{
+  "cookie_state": "storage-state.json",
+  "interval_seconds": 300,
+  "feed_size": 100,
+  "rows_per_page": 30,
+  "pages": 1,
+  "request_delay": [1.5, 4.0],
+  "output_dir": "feeds",
+  "state_file": "state.json",
+  "serve_host": "0.0.0.0",
+  "serve_port": 8899,
+  "notify": false,
+
+  "tasks": [
+    {
+      "keyword": "macmini",
+      "name": "macmini",
+      "max_price": 3000,
+      "min_price": null,
+      "exclude": ["坏了", "配件机", "空机"],
+      "include": [],
+      "pages": 1,
+      "rows_per_page": 30
+    },
+    {
+      "keyword": "机械键盘",
+      "name": "keyboard",
+      "max_price": 500,
+      "min_price": null,
+      "exclude": ["坏的", "尸体"],
+      "include": [],
+      "pages": 1,
+      "rows_per_page": 30
+    }
+  ]
+}
