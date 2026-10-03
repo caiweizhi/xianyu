@@ -1,0 +1,32 @@
+# ============================================================
+#  xianyu-rss 依赖清单
+#  分层说明：注释里 "#[运行时]" 的是零依赖，跑抓取和 RSS 一个包都不用装。
+# ============================================================
+
+# ------------------------------------------------------------
+# 运行时：纯 Python 标准库，无需安装
+#   xianyu_rss.py  (抓取 + 去重 + RSS 2.0 + HTTP 服务 :8899)
+#   diag.py        (排障诊断)
+# 只用 urllib.request / http.cookiejar / hashlib / http.server /
+# json / xml.sax.saxutils / email.utils …
+# ------------------------------------------------------------
+
+# ------------------------------------------------------------
+# 仅「扫码登录」需要（xianyu_login.py）
+# ------------------------------------------------------------
+
+# 1) playwright：headless Chromium 登录。
+#    这是拿全 19 条 cookie（unb/sgcookie/tracknick/csg/tfstk/xlly_s/KLNotice）
+#    的唯一途径；纯 HTTP 登录只能拿到 7 条，抓搜索必报 RGV587。
+#    pip 装完还要再下浏览器内核：python -m playwright install chromium
+playwright>=1.40
+
+# 2) qrcode：渲染二维码（终端半块字符 + 存 login-qr.png 并自动打开）。
+#    装了它才能在终端直接扫；不装脚本会打印二维码原文让你自己生成。
+qrcode>=7.4
+
+# 3) pillow：可选。
+#    qrcode 自带纯 Python 的 PNG 后端（qrcode.image.pure.PyPNGImage），
+#    没 pillow 也能正常存出 login-qr.png；
+#    只有你想用 pillow 自己改尺寸/转 jpg 时才需要装。
+pillow>=10.0.0

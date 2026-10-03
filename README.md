@@ -1,6 +1,8 @@
 # xianyu-rss —— 闲鱼上新监控，直接输出 RSS
 
-单文件、零第三方依赖（只用 Python 标准库），给 FreshRSS / 任何 RSS 阅读器供源。
+单文件、运行时零第三方依赖（只用 Python 标准库），给 FreshRSS / 任何 RSS 阅读器供源。
+唯一需要 pip 包的是**扫码登录**那一步（`playwright` + `qrcode`，详见[依赖](#依赖pip-装什么)）；
+抓取和 RSS 本身一个包都不装。
 
 ## 原理
 
@@ -106,29 +108,132 @@ run.cmd login
 用**闲鱼 App** 扫码并在手机上点「确认登录」即可，登录态写入 `storage-state.json`。
 二维码约 3 分钟有效，过期会自动刷新；整体超时 7 分钟。
 
-实现是**纯 HTTP，不启浏览器**（接口来自闲鱼登录页自身）：
+### 为什么必须启一个真浏览器
 
-| 步骤 | 接口 |
+这一点踩过坑，先说结论。实测两种做法：
+
+| 做法 | 拿到的 cookie | 抓搜索 |
+|---|---|---|
+| 纯 HTTP：登录页 + `generate.do` + `query.do` + 收尾跳转 | 7 条（`XSRF-TOKEN`/`_samesite_flag_`/`cookie2`/`t`/`_tb_token_`/`cna`/`sca`） | `RGV587_ERROR::SM::哎哟喂,被挤爆啦` |
+| 浏览器（headless Chromium） | 19 条，含 `unb`/`sgcookie`/`tracknick`/`csg`/`tfstk`/`xlly_s`/`KLNotice` | `SUCCESS::调用成功` |
+
+差的这 12 条**不是 `Set-Cookie` 下发的，是 `www.goofish.com` 页面里 JS 算出来写进去的**：
+登录页自己的前端 `havana-nlogin/index.js` 里压根没出现过这几个名字，
+纯 HTTP 拿到 HTML 也不会执行脚本。所以**纯 HTTP 有上限，别再试了**。
+
+登录脚本因此默认启一个 headless Chromium，流程（与 `xianyu-monitor-master` 的
+`webbind.py` 同款）：
+
+| 步骤 | 动作 |
 |---|---|
-| 取二维码 | `GET passport.goofish.com/newlogin/qrcode/generate.do?appName=xianyu&fromSite=77` → `codeContent`（二维码内容）、`t`、`ck` |
-| 轮询状态 | `POST passport.goofish.com/newlogin/qrcode/query.do`，body `appName=xianyu&fromSite=77&t=&ck=` → `NEW` / `SCANED` / `CONFIRMED` / `EXPIRED` |
-| 落地 cookie | 确认后访问 `qrcodeCheck.htm?lgToken=...`，再回访 `www.goofish.com` |
+| 开浏览器 | `chromium.launch(headless=True)`，locale `zh-CN`、时区 `Asia/Shanghai` |
+| 打开登录页 | `passport.goofish.com/mini_login.htm?...&qrCodeFirst=true&stie=77`，并**拦截**它自己发出的 `newlogin/qrcode/generate.do` |
+| 出码 | 从 `content.data.codeContent` 取出内容 → 终端画半块字符二维码 + 存 `login-qr.png` 自动打开 |
+| 等待 | 页面自己轮询 `query.do`，`page.on("response")` 捕获状态 `NEW`/`SCANED`/`CONFIRMED`/`EXPIRED` |
+| **落地 cookie** | CONFIRMED 后持续 `context.cookies()` 轮询，等出现 `sgcookie`/`unb`/`tracknick`/`lgc`/`uc1`/… 再存盘 |
+| 存盘 | `context.storage_state()` → `storage-state.json`（含 httpOnly cookie） |
 
-只有渲染二维码需要 `qrcode`（存 PNG 还需 `pillow`），监控运行时不需要它们。
-如果没装，脚本会退化成直接打印二维码内容，你自己拿去生成也行：
+### 参数
 
 ```bat
-D:\Program Files\python\python.exe -m pip install qrcode pillow
+run.cmd login                    REM 浏览器扫码（默认，推荐）
+run.cmd login --no-verify        REM 跳过真接口校验
+run.cmd login --no-merge         REM 不要用旧登录态补缺失的 cookie
+run.cmd login --headful          REM 有头窗口，方便看页面（调试用）
+run.cmd login --http             REM 退回纯 HTTP 流程，大概率残缺，只是留个后路
 ```
 
+落盘前会拿真接口验一遍。**判据是身份凭证在不在（`unb`/`sgcookie`/`tracknick`/…），
+不是单次搜索结果**——账号刚被风控时任何登录态都会 RGV587，那种情况只提示不动文件。
+如果扫完确实缺凭证，脚本**默认自动用旧登录态（`storage-state.bak.json`）补洞**再验。
+
+### 依赖（pip 装什么）
+
+清单在仓库根的 [`requirements.txt`](requirements.txt)，分三层，**绝大多数情况你什么都不用装**：
+
+| 用到哪 | 包 | 是不是必须 | 缺了会怎样 |
+|---|---|---|---|
+| 抓取 + 生成 RSS + `serve` / `once` / `check` / `diag` | *无*（纯标准库） | ✅ 必须，**但不用装** | —— `xianyu_rss.py` / `diag.py` 只 import `urllib`、`http.cookiejar`、`hashlib`、`http.server`、`json`、`xml.sax.saxutils`、`email.utils` |
+| 扫码登录（默认流程） | `playwright` | 必须 | 脚本提示「浏览器登录不可用」并询问是否退回纯 HTTP（纯 HTTP 只有 7 条 cookie，必挂 `RGV587`） |
+| 扫码登录 | `qrcode` | 必须（否则看不到码） | 终端画不出二维码，脚本改为打印二维码原文，你自己拿去生成 |
+| 扫码登录 | `pillow` | **可选** | 没有也能存出 `login-qr.png`——`qrcode` 自带纯 Python PNG 后端，会回退到 `qrcode.image.pure.PyPNGImage` |
+
+> 一句话：**只有跑 `run.cmd login` 才需要装东西，日常跑 `run.cmd`（或 `run.cmd once`）零依赖。**
+
+#### 一台干净机器上怎么装
+
+```bat
+:: 1) 只为了登录：playwright + qrcode（pillow 可省略）
+D:\Program Files\python\python.exe -m pip install -r requirements.txt
+
+:: 2) playwright 还要单独下浏览器内核（约 150MB，装一次即可）
+D:\Program Files\python\python.exe -m playwright install chromium
+
+:: 3) 自检：三个都 import 得到才算齐
+D:\Program Files\python\python.exe -c "import playwright, qrcode; import PIL; print('ok')"
+```
+
+`playwright install chromium` 是**两步**：`pip install` 只装 Python 包，浏览器内核
+（`%LOCALAPPDATA%\ms-playwright\chromium-*`）得单独下，漏了这步启动会报找不到浏览器。
+
+#### 本机（Windows）现状
+
+`run.cmd` 用的 `D:\Program Files\python`（**Python 3.12.14**）已经装齐，直接跑就行：
+
+```
+playwright 1.63.0      qrcode 8.2      pillow 12.3.0
+ms-playwright\chromium-1243 + chromium_headless_shell-1243
+```
+
+想换别的解释器（比如别的 Python）再补装上面的三步即可。
+
+#### Linux / 青龙容器
+
+- 只跑 `python3 xianyu_rss.py once`：**零依赖**，容器里一个 pip 包都不用装。
+- 想在容器内自己扫码登录：容器里得有 playwright + 浏览器内核，但 **Chromium 需要系统依赖库**，
+  自行 apt 装 `chromium` 再 `pip install playwright` 并 `playwright install chromium` 更省心。
+  更稳的做法仍是**本机登录好后把 `storage-state.json` 拷进容器**（见 [DEPLOY-青龙.md](DEPLOY-青龙.md)）。
+
 登录态过期时（表现为 `check` 失败、或大量 `FAIL_SYS_ILLEGAL_ACCESS`），重新跑一次 `run.cmd login`。
+
+## 抓不到数据怎么办
+
+先跑诊断，它会直接告诉你原因：
+
+```bat
+run.cmd diag
+REM Linux / 青龙里：python3 diag.py
+```
+
+输出会覆盖：登录态缺哪些关键 cookie、有没有被代理劫持、首页通不通、mtop 握手每一步的
+返回码，最后给一张「可能原因 → 解决办法」表。
+
+**最常见两个坑：**
+
+1. **登录态残缺。** 缺 `unb` / `sgcookie` / `csg` / `tfstk` / `xlly_s` / `tracknick`
+   等时，mtop 直接返回：
+
+   ```
+   FAIL_SYS_USER_VALIDATE, RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试!
+   ```
+
+   实测逐条裁 cookie 的边缘：任何单条缺失还能跑，但低于完整 19 条就会挂——
+   `sgcookie` + `tfstk` + `xlly_s` + `csg` + `unb` 这一组是风控判定的核心。
+    解决：跑 `run.cmd login`（新流程会自己补齐这些），或把别处完整的
+   `storage-state.json` 复制过来。
+
+2. **账号处于风控窗口（假的 RGV587）。** 高频请求之后，哪怕 cookie 完全正常，
+   也会连着几分钟报同一句 RGV587，等 2~3 分钟自己就恢复。
+   判断方法：隔几分钟重跑 `run.cmd diag`；能通就说明只是限流，别急着重新登录。
 
 ## 文件说明
 
 | 文件 | 作用 |
 |---|---|
 | `xianyu_rss.py` | 抓取 + RSS 主逻辑，单文件、零依赖 |
-| `xianyu_login.py` | 扫码登录，纯 HTTP；仅渲染二维码时需要 `qrcode` |
+| `diag.py` | 排障诊断：抓不到数据时跑它，一次性查登录态/代理/握手/接口返回 |
+| `xianyu_login.py` | 扫码登录（headless Chromium，可 `--http` 退回纯 HTTP）；需 `playwright`+`qrcode`（`pillow` 可选） |
+| `requirements.txt` | 依赖清单（分层注释，运行时零依赖） |
 | `config.json` | 关键词与过滤条件 |
 | `state.json` | 已见商品 ID + feed 缓存（自动生成，删了会重新推送一遍） |
 | `feeds/*.xml` | 生成的 RSS |

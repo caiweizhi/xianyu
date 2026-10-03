@@ -1,7 +1,7 @@
 feeds/
 logs/
 state.json
-storage-state.json
+storage-state*.json
 login-qr.png
 __pycache__/
 *.pyc

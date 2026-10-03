@@ -276,7 +276,8 @@ def _ret_hint(ret: str) -> str:
     if "ILLEGAL_ACCESS" in r:
         return "签名被拒：账号可能已被风控，建议把 interval_seconds 调大、减少关键词"
     if "RGV587" in r or "FORBID" in r or "RISK" in r or "BLOCK" in r:
-        return "触发闲鱼风控，请放慢频率（interval_seconds 不低于 300）或换一个账号"
+        return ("触发闲鱼反爬：最常见原因是登录态残缺（缺 unb/sgcookie/cna），"
+                "先用 python3 diag.py 检查；确认齐全再考虑放慢频率")
     if "NOT_FOUND" in r or "API_NOT_FOUND" in r:
         return "接口不存在了 —— 闲鱼大概率改版，需要更新请求参数"
     if "TOO_MANY" in r or "FREQ" in r or "LIMIT" in r:
@@ -298,6 +299,7 @@ class Session:
         if n == 0:
             raise RuntimeError(f"登录态为空或无法解析: {state_path}")
         log(f"载入登录 cookie {n} 条")
+        self._warm_device_cookies()
         _warn_if_proxied()
 
     def _load_state(self, path: pathlib.Path) -> int:
@@ -324,6 +326,35 @@ class Session:
             except Exception:
                 continue
         return n
+
+    # 设备指纹 cookie 的来源：浏览器里是页面 JS 种的，纯 HTTP 扫码登录拿不到，
+    # 缺了会显著抬高风控评分。实测 www.goofish.com 首页一条都不下发，
+    # 而下面两个埋点地址会分别下发 cna / sca。
+    _WARMUP = (("cna", "https://log.mmstat.com/eg.js"),
+               ("sca", "https://gm.mmstat.com/"))
+
+    def _warm_device_cookies(self) -> None:
+        """补齐设备指纹 cookie，降低 mtop 把请求判成机器人的概率。
+
+        只在确实缺失时请求，两个都是几十字节的埋点，开销可以忽略。
+        失败了也不能影响主流程——它是加分项不是必需项。
+        """
+        have = {c.name for c in self.jar}
+        todo = [(u, n) for n, u in self._WARMUP if n not in have]
+        if not todo:
+            return
+        for url, _ in todo:
+            try:
+                req = urllib.request.Request(url)
+                req.add_header("User-Agent", UA)
+                req.add_header("Referer", "https://www.goofish.com/")
+                with self.opener.open(req, timeout=15):
+                    pass
+            except Exception:
+                pass
+        gained = {c.name for c in self.jar} - have
+        if gained:
+            log(f"已补齐设备指纹 cookie: {sorted(gained)}")
 
     @property
     def token(self) -> str:
